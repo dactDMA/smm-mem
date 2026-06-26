@@ -25,6 +25,7 @@
 #define CR0_WP (1ULL << 16)
 #define MSR_LSTAR 0xC0000082U
 #define SAVE_STATE_CR3 53U
+#define VERBOSE 1
 
 typedef struct EFI_SMM_CPU_PROTOCOL EFI_SMM_CPU_PROTOCOL;
 typedef EFI_STATUS(EFIAPI *READ_SAVE_STATE)(const EFI_SMM_CPU_PROTOCOL *This,
@@ -174,6 +175,14 @@ static VOID LogStatus(const char *Text, EFI_STATUS Status) {
 #define Log(Text)
 #define LogHex(Value)
 #define LogStatus(Text, Status)
+#endif
+
+#if SERIAL && VERBOSE
+#define Dbg(Text) Log(Text)
+#define DbgHex(Value) LogHex(Value)
+#else
+#define Dbg(Text)
+#define DbgHex(Value)
 #endif
 
 static VOID WriteText(char *Out, UINTN OutSize, const char *Text) {
@@ -564,10 +573,16 @@ static EFI_STATUS ResolveExport(UINT64 Cr3, UINT64 Base, const char *Name,
 
 static VOID LocateSmmCpu(VOID) {
   EFI_LOCATE_PROTOCOL Locate;
+  EFI_STATUS Status;
 
   if (gSmmCpu == 0) {
     Locate = (EFI_LOCATE_PROTOCOL)gSmst->SmmLocateProtocol;
-    Locate(&gEfiSmmCpuProtocolGuid, 0, (VOID **)&gSmmCpu);
+    Status = Locate(&gEfiSmmCpuProtocolGuid, 0, (VOID **)&gSmmCpu);
+    Dbg("smm cpu protocol locate=0x");
+    DbgHex(Status);
+    Dbg(" ptr=0x");
+    DbgHex((UINT64)(UINTN)gSmmCpu);
+    Dbg("\n");
   }
 }
 
@@ -692,25 +707,57 @@ static EFI_STATUS InitKernel(VOID) {
   UINT64 Lstar;
   UINT64 Cr3;
   UINTN Cpu;
+  EFI_STATUS Status;
 
   if (gKernelBase != 0 && gSystemProcess != 0) {
     return EFI_SUCCESS;
   }
   Lstar = __readmsr(MSR_LSTAR);
+  Dbg("initkernel lstar=0x");
+  DbgHex(Lstar);
+  Dbg(" cpus=0x");
+  DbgHex(gSmst->NumberOfCpus);
+  Dbg("\n");
   for (Cpu = 0; Cpu < gSmst->NumberOfCpus; Cpu++) {
-    if (ReadSavedCr3(Cpu, &Cr3) == EFI_SUCCESS && Cr3 < 0x100000000ULL &&
+    Status = ReadSavedCr3(Cpu, &Cr3);
+    Dbg("cpu=0x");
+    DbgHex(Cpu);
+    Dbg(" cr3read=0x");
+    DbgHex(Status);
+    if (!EFI_ERROR(Status)) {
+      Dbg(" cr3=0x");
+      DbgHex(Cr3);
+    }
+    Dbg("\n");
+    if (!EFI_ERROR(Status) && Cr3 < 0x100000000ULL &&
         TryKernelCr3(Cr3, Lstar) == EFI_SUCCESS) {
+      Dbg("initkernel ok base=0x");
+      DbgHex(gKernelBase);
+      Dbg(" sys=0x");
+      DbgHex(gSystemProcess);
+      Dbg("\n");
       return EFI_SUCCESS;
     }
   }
   for (Cpu = 0; Cpu < gSmst->NumberOfCpus; Cpu++) {
     if (ReadSavedCr3(Cpu, &Cr3) == EFI_SUCCESS &&
         TryKernelCr3(Cr3, Lstar) == EFI_SUCCESS) {
+      Dbg("initkernel ok (pass2) base=0x");
+      DbgHex(gKernelBase);
+      Dbg("\n");
       return EFI_SUCCESS;
     }
   }
   Cr3 = __readcr3() & PAGE_MASK;
-  return TryKernelCr3(Cr3, Lstar);
+  Status = TryKernelCr3(Cr3, Lstar);
+  if (!EFI_ERROR(Status)) {
+    Dbg("initkernel ok (smm cr3) base=0x");
+    DbgHex(gKernelBase);
+    Dbg("\n");
+  } else {
+    Dbg("initkernel failed\n");
+  }
+  return Status;
 }
 
 static EFI_STATUS ResolveProcessLayout(VOID) {
@@ -880,8 +927,15 @@ static EFI_STATUS FindProcessName(const char *Name, PROCESS_INFO *Info) {
   char CurrentName[NAME_SIZE];
   char ImagePath[260];
   UINT64 Cr3;
+  EFI_STATUS ResolveStatus;
 
-  if (ResolveProcessLayout() != EFI_SUCCESS || gNameOffset == 0) {
+  ResolveStatus = ResolveProcessLayout();
+  if (ResolveStatus != EFI_SUCCESS || gNameOffset == 0) {
+    Dbg("findproc resolve=0x");
+    DbgHex(ResolveStatus);
+    Dbg(" nameoff=0x");
+    DbgHex(gNameOffset);
+    Dbg("\n");
     return EFI_NOT_FOUND;
   }
   ZeroMem(CurrentName, sizeof(CurrentName));
@@ -1152,7 +1206,8 @@ static EFI_STATUS EFIAPI SwSmiHandler(EFI_HANDLE DispatchHandle,
   (void)Context;
   (void)CommBuffer;
   (void)CommBufferSize;
-  return ProcessRequest();
+  ProcessRequest();
+  return EFI_SUCCESS;
 }
 
 static EFI_STATUS RegisterSwSmi(VOID) {
@@ -1171,7 +1226,15 @@ static EFI_STATUS RegisterSwSmi(VOID) {
   if (EFI_ERROR(Status) || SwDispatch == 0 || SwDispatch->Register == 0) {
     LogStatus("smm sw dispatch unavailable ",
               EFI_ERROR(Status) ? Status : EFI_NOT_FOUND);
-    return EFI_ERROR(Status) ? Status : EFI_NOT_FOUND;
+    if (gSmst != 0 && gSmst->SmiHandlerRegister != 0) {
+        Status = gSmst->SmiHandlerRegister(SwSmiHandler, 0, &gSwHandle);
+        if (!EFI_ERROR(Status)) {
+            Log("smm root SMI handler registered (fallback)\n");
+            return EFI_SUCCESS;
+        }
+        LogStatus("smm root handler failed ", Status);
+    }
+    return EFI_NOT_FOUND;
   }
   if ((UINTN)gSwSmiValue > SwDispatch->MaximumSwiValue) {
     Log("smm sw value out of range max=0x");

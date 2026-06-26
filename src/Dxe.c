@@ -46,6 +46,7 @@ static EFI_EVENT gSmmCommEvent;
 static EFI_EVENT gAcpiEvent;
 static VOID *gSmmCommRegistration;
 static VOID *gAcpiRegistration;
+static EFI_PHYSICAL_ADDRESS gCommBufferPhysical;
 static UINT32 gConfigured;
 static UINT32 gConfigureAttempts;
 static UINT32 gWmiInstalled;
@@ -575,10 +576,22 @@ static EFI_STATUS ConfigureSmm(VOID) {
   CommSize = sizeof(EFI_SMM_COMMUNICATE_HEADER) + sizeof(CONFIG) + 16;
   CommBuffer = FindSmmCommRegion(CommSize, &OriginalRegionType, LogIt);
   if (CommBuffer == 0) {
-    if (LogIt) {
-      Log("dxe smm configure no comm buffer\n");
+    if (gCommBufferPhysical != 0) {
+      CommBuffer = (VOID *)(UINTN)gCommBufferPhysical;
+    } else {
+      EFI_PHYSICAL_ADDRESS Addr = 0xFFFFFFFFULL;
+      Status = gSystemTable->BootServices->AllocatePages(
+          AllocateMaxAddress, EFI_RUNTIME_SERVICES_DATA, 1, &Addr);
+      if (EFI_ERROR(Status)) {
+        if (LogIt) {
+          Log("dxe smm configure no comm buffer\n");
+        }
+        return Status;
+      }
+      gCommBufferPhysical = Addr;
+      CommBuffer = (VOID *)(UINTN)Addr;
     }
-    return EFI_NOT_FOUND;
+    OriginalRegionType = 0xFFFFFFFFU;
   }
   ZeroMem(CommBuffer, CommSize);
   Header = (EFI_SMM_COMMUNICATE_HEADER *)CommBuffer;

@@ -417,10 +417,37 @@ int wmain(int argc, wchar_t **argv) {
   if (argc == 1 || (argc == 2 && _wcsicmp(argv[1], L"ping") == 0)) {
     int Ok = Init() && Ping();
     printf("%s\n", Ok ? "pong" : "failed");
+
+    if (ReadPhys(0x1000, &Ok, sizeof(Ok))) {
+        printf("ReadPhys under 4gb OK: 0x%llX\n", (unsigned long long)Ok);
+    }
+    else {
+        printf("ReadPhys under 4gb failed\n");
+    }
+    if (ReadPhys(0x200000000, &Ok, sizeof(Ok))) {
+        printf("ReadPhys over 4gb OK: 0x%llX\n", (unsigned long long)Ok);
+    }
+    else {
+        printf("ReadPhys over 4gb failed\n");
+    }
+    PROCESS_INFO notepad;
+    if (FindProcessByName("notepad.exe", &notepad))
+    {
+        printf("FindProcessByName OK: 0x%llX\n", (unsigned long long)Ok);
+        printf("Name: %s\n", notepad.Name);
+        printf("PID: 0x%llX\n", (unsigned long long)notepad.Pid);
+        printf("ImageBase: 0x%llX\n", (unsigned long long)notepad.ImageBase);
+    }
+    else
+    {
+        printf("FindProcessByName failed\n");
+    }
+
     Close();
     return Ok ? 0 : 1;
   }
   printf("Usage: mem-client.exe [ping]\n");
+
   return 1;
 }
 #endif
