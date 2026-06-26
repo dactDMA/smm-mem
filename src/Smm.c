@@ -26,6 +26,7 @@
 #define MSR_LSTAR 0xC0000082U
 #define SAVE_STATE_CR3 53U
 #define VERBOSE 1
+#define RUNTIME_RELOAD 1
 
 typedef struct EFI_SMM_CPU_PROTOCOL EFI_SMM_CPU_PROTOCOL;
 typedef EFI_STATUS(EFIAPI *READ_SAVE_STATE)(const EFI_SMM_CPU_PROTOCOL *This,
@@ -38,6 +39,13 @@ typedef EFI_STATUS(EFIAPI *WRITE_SAVE_STATE)(const EFI_SMM_CPU_PROTOCOL *This,
 typedef EFI_STATUS(EFIAPI *SMM_ALLOCATE_PAGES)(EFI_ALLOCATE_TYPE Type,
                                                UINT32 MemoryType, UINTN Pages,
                                                EFI_PHYSICAL_ADDRESS *Memory);
+#if RUNTIME_RELOAD
+typedef EFI_STATUS(EFIAPI *SMM_ALLOCATE_POOL)(UINT32 PoolType, UINTN Size,
+                                              VOID **Buffer);
+typedef EFI_STATUS(EFIAPI *SMM_INSTALL_CONFIG_TABLE)(
+    const EFI_SMM_SYSTEM_TABLE2 *SystemTable, const EFI_GUID *Guid,
+    VOID *Table, UINTN TableSize);
+#endif
 
 struct EFI_SMM_CPU_PROTOCOL {
   READ_SAVE_STATE ReadSaveState;
@@ -938,14 +946,27 @@ static EFI_STATUS FindProcessName(const char *Name, PROCESS_INFO *Info) {
     Dbg("\n");
     return EFI_NOT_FOUND;
   }
+  Dbg("findproc pid=0x");
+  DbgHex(gPidOffset);
+  Dbg(" links=0x");
+  DbgHex(gLinksOffset);
+  Dbg(" name=0x");
+  DbgHex(gNameOffset);
+  Dbg(" sys=0x");
+  DbgHex(gSystemProcess);
+  Dbg("\n");
   ZeroMem(CurrentName, sizeof(CurrentName));
   CopyVirtCr3(gKernelCr3, gSystemProcess + gNameOffset, CurrentName,
               sizeof(CurrentName) - 1, 0);
+  Dbg("findproc sys=\"");
+  Dbg(CurrentName);
+  Dbg("\"\n");
   if (SameName(CurrentName, Name)) {
     return FillProcessInfo(gSystemProcess, Info);
   }
   Head = gSystemProcess + gLinksOffset;
   if (ReadVirt64(gKernelCr3, Head, &Link) != EFI_SUCCESS) {
+    Dbg("findproc head read failed\n");
     return EFI_NOT_FOUND;
   }
   for (Guard = 0; Guard < 4096 && IsKernelPtr(Link) && Link != Head; Guard++) {
@@ -953,6 +974,9 @@ static EFI_STATUS FindProcessName(const char *Name, PROCESS_INFO *Info) {
     ZeroMem(CurrentName, sizeof(CurrentName));
     CopyVirtCr3(gKernelCr3, Eprocess + gNameOffset, CurrentName,
                 sizeof(CurrentName) - 1, 0);
+    Dbg("[");
+    Dbg(CurrentName);
+    Dbg("] ");
     if (SameName(CurrentName, Name)) {
       return FillProcessInfo(Eprocess, Info);
     }
@@ -969,6 +993,9 @@ static EFI_STATUS FindProcessName(const char *Name, PROCESS_INFO *Info) {
       break;
     }
   }
+  Dbg("\nfindproc not found count=0x");
+  DbgHex(Guard);
+  Dbg("\n");
   return EFI_NOT_FOUND;
 }
 
@@ -1307,6 +1334,52 @@ static EFI_STATUS InitSmm(VOID) {
   return EFI_SUCCESS;
 }
 
+#if RUNTIME_RELOAD
+static CONFIG *FindSmstConfig(VOID) {
+  UINTN Index;
+  EFI_CONFIGURATION_TABLE *Table;
+
+  if (gSmst == 0 || gSmst->SmmConfigurationTable == 0) {
+    return 0;
+  }
+  Table = (EFI_CONFIGURATION_TABLE *)gSmst->SmmConfigurationTable;
+  for (Index = 0; Index < gSmst->NumberOfTableEntries; Index++) {
+    if (CompareGuid(&Table[Index].VendorGuid, &gConfigGuid)) {
+        Dbg("SmstConfig found");
+      return (CONFIG *)Table[Index].VendorTable;
+    }
+  }
+  return 0;
+}
+
+static VOID SaveSmstConfig(const CONFIG *Config) {
+  CONFIG *Saved;
+  SMM_ALLOCATE_POOL AllocPool;
+  SMM_INSTALL_CONFIG_TABLE InstallTable;
+
+  if (gSmst == 0) {
+    return;
+  }
+  Saved = FindSmstConfig();
+  if (Saved == 0 && gSmst->SmmAllocatePool != 0) {
+    AllocPool = (SMM_ALLOCATE_POOL)gSmst->SmmAllocatePool;
+    if (AllocPool(EFI_RUNTIME_SERVICES_DATA, sizeof(CONFIG),
+                  (VOID **)&Saved) != EFI_SUCCESS) {
+      return;
+    }
+  }
+  if (Saved == 0) {
+    return;
+  }
+  CopyMemLocal(Saved, Config, sizeof(CONFIG));
+  if (gSmst->SmmInstallConfigurationTable != 0) {
+    InstallTable = (SMM_INSTALL_CONFIG_TABLE)gSmst->SmmInstallConfigurationTable;
+    InstallTable(gSmst, &gConfigGuid, Saved, sizeof(CONFIG));
+  }
+  Dbg("SmstConfig saved");
+}
+#endif
+
 static EFI_STATUS ApplyConfig(CONFIG *Config, const char *Source) {
   EFI_STATUS Status;
 
@@ -1342,6 +1415,11 @@ static EFI_STATUS ApplyConfig(CONFIG *Config, const char *Source) {
   LogHex(gSwSmiValue);
   Log("\n");
   Status = RegisterSwSmi();
+#if RUNTIME_RELOAD
+  if (!EFI_ERROR(Status)) {
+    SaveSmstConfig(Config);
+  }
+#endif
   return Status;
 }
 
@@ -1411,7 +1489,18 @@ EFI_STATUS EFIAPI SmmEntry(EFI_HANDLE ImageHandle,
   if (!EFI_ERROR(Status)) {
     Status = RegisterConfigComm();
     (void)Status;
+#if RUNTIME_RELOAD
+    {
+      CONFIG *SmstConfig = FindSmstConfig();
+      if (SmstConfig != 0 && SmstConfig->Magic == CONFIG_MAGIC) {
+        Status = ApplyConfig(SmstConfig, "smst");
+      } else {
+        Status = ConfigureFromPublishedTable();
+      }
+    }
+#else
     Status = ConfigureFromPublishedTable();
+#endif
     if (EFI_ERROR(Status)) {
       LogStatus("smm published config failed ", Status);
     }
