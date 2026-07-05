@@ -64,7 +64,7 @@ static EFI_GUID gEdkiiPiSmmCommunicationRegionTableGuid = {
     0x44ac,
     {0xa1, 0x1f, 0xe3, 0xd5, 0x65, 0x26, 0xdb, 0x34}};
 
-static VOID CopyMemLocal(VOID *Destination, const VOID *Source, UINTN Size) {
+static VOID CopyMem(VOID *Destination, const VOID *Source, UINTN Size) {
   UINT8 *Dst = (UINT8 *)Destination;
   const UINT8 *Src = (const UINT8 *)Source;
   while (Size--) {
@@ -88,7 +88,7 @@ VOID *memset(VOID *Destination, int Value, size_t Size) {
 }
 
 VOID *memcpy(VOID *Destination, const VOID *Source, size_t Size) {
-  CopyMemLocal(Destination, Source, Size);
+  CopyMem(Destination, Source, Size);
   return Destination;
 }
 
@@ -172,12 +172,12 @@ static UINT8 AcpiChecksum(const UINT8 *Buffer, UINTN Size) {
 }
 
 static UINT8 *EmitName(UINT8 *Out, const char Name[4]) {
-  CopyMemLocal(Out, Name, 4);
+  CopyMem(Out, Name, 4);
   return Out + 4;
 }
 
 static UINT8 *EmitBytes(UINT8 *Out, const VOID *Data, UINTN Size) {
-  CopyMemLocal(Out, Data, Size);
+  CopyMem(Out, Data, Size);
   return Out + Size;
 }
 
@@ -245,8 +245,8 @@ static UINTN BuildSsdt(UINT8 *Buffer, UINTN Capacity) {
   ZeroMem(Buffer, Capacity);
   Header->Signature = Signature32('S', 'S', 'D', 'T');
   Header->Revision = 2;
-  CopyMemLocal(Header->OemId, "MEMDEV", 6);
-  CopyMemLocal(Header->OemTableId, "MEMDEV  ", 8);
+  CopyMem(Header->OemId, "MEMDEV", 6);
+  CopyMem(Header->OemTableId, "MEMDEV  ", 8);
   Header->OemRevision = 1;
   Header->CreatorId = Signature32('S', 'M', 'M', 'M');
   Header->CreatorRevision = 1;
@@ -271,7 +271,7 @@ static UINTN BuildSsdt(UINT8 *Buffer, UINTN Capacity) {
   Out = EmitString(Out, "Mem");
 
   ZeroMem(Wdg, sizeof(Wdg));
-  CopyMemLocal(Wdg, &gWmiGuid, sizeof(gWmiGuid));
+  CopyMem(Wdg, &gWmiGuid, sizeof(gWmiGuid));
   Wdg[16] = 'B';
   Wdg[17] = 'D';
   Wdg[18] = 1;
