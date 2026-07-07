@@ -14,10 +14,10 @@
 
 #define PAGE_SIZE 0x1000ULL
 #define PAGE_MASK 0xFFFFFFFFFFFFF000ULL
-#define LARGE_PAGE_SIZE 0x200000ULL
-#define LARGE_PAGE_MASK 0xFFFFFFFFFFE00000ULL
-#define HUGE_PAGE_SIZE 0x40000000ULL
-#define HUGE_PAGE_MASK 0xFFFFFFFFC0000000ULL
+#define PAGE_2MB_SIZE 0x200000ULL
+#define PAGE_2MB_MASK 0xFFFFFFFFFFE00000ULL
+#define PAGE_1GB_SIZE 0x40000000ULL
+#define PAGE_1GB_MASK 0xFFFFFFFFC0000000ULL
 #define PTE_PRESENT 1ULL
 #define PTE_RW 2ULL
 #define PTE_LARGE (1ULL << 7)
@@ -82,7 +82,7 @@ static UINT64 gMapPdpt;
 static UINT64 gMapWindowBase;
 static UINT32 gMapWindowBaseValid;
 
-static VOID CopyMemLocal(VOID *Destination, const VOID *Source, UINTN Size) {
+static VOID CopyMem(VOID *Destination, const VOID *Source, UINTN Size) {
   UINT8 *Dst = (UINT8 *)Destination;
   const UINT8 *Src = (const UINT8 *)Source;
   while (Size--) {
@@ -97,7 +97,7 @@ static VOID ZeroMem(VOID *Buffer, UINTN Size) {
   }
 }
 
-static VOID WritePtEntryNoWp(volatile UINT64 *Entry, UINT64 Value) {
+static VOID WritePTE(volatile UINT64 *Entry, UINT64 Value) {
   UINT64 Cr0;
 
   Cr0 = __readcr0();
@@ -115,7 +115,7 @@ VOID *memset(VOID *Destination, int Value, size_t Size) {
 }
 
 VOID *memcpy(VOID *Destination, const VOID *Source, size_t Size) {
-  CopyMemLocal(Destination, Source, Size);
+  CopyMem(Destination, Source, Size);
   return Destination;
 }
 
@@ -284,13 +284,13 @@ static EFI_STATUS InitMapWindow(VOID) {
   gMapWindowBase = 0;
   gMapWindowBaseValid = 0;
   gMapWindow = ((UINT64)Index) << 39;
-  WritePtEntryNoWp(&Pml4[Index], (gMapPdpt & Mask) | PAGE_TABLE_FLAGS);
+  WritePTE(&Pml4[Index], (gMapPdpt & Mask) | PAGE_TABLE_FLAGS);
   __writecr3(__readcr3());
   gMapReady = 1;
   return EFI_SUCCESS;
 }
 
-static EFI_STATUS MapWindowHuge(UINT64 Address) {
+static EFI_STATUS MapWindow(UINT64 Address) {
   EFI_STATUS Status;
   UINT64 Entry;
   UINT64 Base;
@@ -301,20 +301,20 @@ static EFI_STATUS MapWindowHuge(UINT64 Address) {
     return Status;
   }
   Mask = PhysMask();
-  Base = Address & HUGE_PAGE_MASK & Mask;
+  Base = Address & PAGE_1GB_MASK & Mask;
   if (gMapWindowBaseValid != 0 && gMapWindowBase == Base) {
     return EFI_SUCCESS;
   }
   Entry = Base | PAGE_TABLE_FLAGS | PTE_LARGE;
-  WritePtEntryNoWp(&((volatile UINT64 *)(UINTN)gMapPdpt)[0], Entry);
+  WritePTE(&((volatile UINT64 *)(UINTN)gMapPdpt)[0], Entry);
   __writecr3(__readcr3());
   gMapWindowBase = Base;
   gMapWindowBaseValid = 1;
   return EFI_SUCCESS;
 }
 
-static EFI_STATUS CopyPhysWindow(UINT64 Address, VOID *Buffer, UINTN Size,
-                                 BOOLEAN Write) {
+static EFI_STATUS CopyPhys(UINT64 Address, VOID *Buffer, UINTN Size,
+                           BOOLEAN Write) {
   volatile UINT8 *Window;
   UINT8 *Bytes;
   EFI_STATUS Status;
@@ -324,12 +324,12 @@ static EFI_STATUS CopyPhysWindow(UINT64 Address, VOID *Buffer, UINTN Size,
 
   Bytes = (UINT8 *)Buffer;
   while (Size != 0) {
-    Offset = Address & (HUGE_PAGE_SIZE - 1ULL);
-    Chunk = (UINTN)(HUGE_PAGE_SIZE - Offset);
+    Offset = Address & (PAGE_1GB_SIZE - 1ULL);
+    Chunk = (UINTN)(PAGE_1GB_SIZE - Offset);
     if (Chunk > Size) {
       Chunk = Size;
     }
-    Status = MapWindowHuge(Address);
+    Status = MapWindow(Address);
     if (EFI_ERROR(Status)) {
       return Status;
     }
@@ -346,11 +346,6 @@ static EFI_STATUS CopyPhysWindow(UINT64 Address, VOID *Buffer, UINTN Size,
     Size -= Chunk;
   }
   return EFI_SUCCESS;
-}
-
-static EFI_STATUS CopyPhys(UINT64 Address, VOID *Buffer, UINTN Size,
-                           BOOLEAN Write) {
-  return CopyPhysWindow(Address, Buffer, Size, Write);
 }
 
 static UINT64 PhysMask(VOID) {
@@ -690,9 +685,9 @@ static EFI_STATUS TryKernelCr3(UINT64 Cr3, UINT64 Lstar) {
   UINT64 Export;
 
   gKernelCr3 = Cr3 & PAGE_MASK;
-  Start = Lstar & LARGE_PAGE_MASK;
+  Start = Lstar & PAGE_2MB_MASK;
   Limit = Start > 0x10000000ULL ? Start - 0x10000000ULL : 0;
-  for (Base = Start; Base > Limit; Base -= LARGE_PAGE_SIZE) {
+  for (Base = Start; Base > Limit; Base -= PAGE_2MB_SIZE) {
     UINT16 Mz;
     if (ReadVirt16(gKernelCr3, Base, &Mz) != EFI_SUCCESS || Mz != 0x5A4D) {
       continue;
@@ -1095,7 +1090,7 @@ static VOID Reply(RESPONSE *Response, REQUEST *Request, EFI_STATUS Status,
   }
   Response->DataSize = DataSize;
   if (Data != 0 && DataSize != 0) {
-    CopyMemLocal(Response->Data, Data, DataSize);
+    CopyMem(Response->Data, Data, DataSize);
   }
 }
 
@@ -1115,11 +1110,11 @@ static EFI_STATUS HandleRequest(REQUEST *Request, RESPONSE *Response) {
     return EFI_NOT_FOUND;
   }
   Size = (UINT32)Request->Arg3;
-  if (Request->Command == CMD_PING) {
-    Reply(Response, Request, EFI_SUCCESS, 0x504F4E47ULL, 0, 0);
+  if (Request->Command == PING) {
+    Reply(Response, Request, EFI_SUCCESS, 0, 0, 0);
     return EFI_SUCCESS;
   }
-  if (Request->Command == CMD_READ_PHYS) {
+  if (Request->Command == READ_PHYS) {
     Size = (UINT32)Request->Arg2;
     if (Size > RESPONSE_DATA_SIZE) {
       Reply(Response, Request, EFI_INVALID_PARAMETER, 0, 0, 0);
@@ -1130,26 +1125,26 @@ static EFI_STATUS HandleRequest(REQUEST *Request, RESPONSE *Response) {
           EFI_ERROR(Status) ? 0 : Size);
     return Status;
   }
-  if (Request->Command == CMD_WRITE_PHYS) {
+  if (Request->Command == WRITE_PHYS) {
     Status = Request->DataSize <= RESPONSE_DATA_SIZE
                  ? CopyPhys(Request->Arg1, Request->Data, Request->DataSize, 1)
                  : EFI_INVALID_PARAMETER;
     Reply(Response, Request, Status, Request->Arg1, 0, 0);
     return Status;
   }
-  if (Request->Command == CMD_FIND_PROCESS_PID) {
+  if (Request->Command == FIND_PROCESS_PID) {
     Status = FindProcessPid((UINT32)Request->Arg1, &Process);
     Reply(Response, Request, Status, Process.Eprocess, &Process,
           EFI_ERROR(Status) ? 0 : sizeof(Process));
     return Status;
   }
-  if (Request->Command == CMD_FIND_PROCESS_NAME) {
+  if (Request->Command == FIND_PROCESS_NAME) {
     Status = FindProcessName((char *)Request->Data, &Process);
     Reply(Response, Request, Status, Process.Eprocess, &Process,
           EFI_ERROR(Status) ? 0 : sizeof(Process));
     return Status;
   }
-  if (Request->Command == CMD_TRANSLATE_VIRT) {
+  if (Request->Command == TRANSLATE_VIRT) {
     Status = FindProcessPid((UINT32)Request->Arg1, &Process);
     if (!EFI_ERROR(Status)) {
       Status = TranslateCr3(Process.Cr3, Request->Arg2, &Pa);
@@ -1157,7 +1152,7 @@ static EFI_STATUS HandleRequest(REQUEST *Request, RESPONSE *Response) {
     Reply(Response, Request, Status, EFI_ERROR(Status) ? 0 : Pa, 0, 0);
     return Status;
   }
-  if (Request->Command == CMD_READ_VIRT) {
+  if (Request->Command == READ_VIRT) {
     if (Size > RESPONSE_DATA_SIZE) {
       Reply(Response, Request, EFI_INVALID_PARAMETER, 0, 0, 0);
       return EFI_INVALID_PARAMETER;
@@ -1170,7 +1165,7 @@ static EFI_STATUS HandleRequest(REQUEST *Request, RESPONSE *Response) {
           EFI_ERROR(Status) ? 0 : Size);
     return Status;
   }
-  if (Request->Command == CMD_WRITE_VIRT) {
+  if (Request->Command == WRITE_VIRT) {
     if (Request->DataSize > RESPONSE_DATA_SIZE) {
       Reply(Response, Request, EFI_INVALID_PARAMETER, 0, 0, 0);
       return EFI_INVALID_PARAMETER;
@@ -1183,25 +1178,25 @@ static EFI_STATUS HandleRequest(REQUEST *Request, RESPONSE *Response) {
     Reply(Response, Request, Status, Request->Arg2, 0, 0);
     return Status;
   }
-  if (Request->Command == CMD_FIND_MODULE) {
+  if (Request->Command == FIND_MODULE) {
     Status = FindUserModule((UINT32)Request->Arg1, (char *)Request->Data,
                             &Module);
     Reply(Response, Request, Status, Module.Base, &Module,
           EFI_ERROR(Status) ? 0 : sizeof(Module));
     return Status;
   }
-  if (Request->Command == CMD_FIND_KERNEL_MODULE) {
+  if (Request->Command == FIND_KERNEL_MODULE) {
     Status = FindKernelModule((char *)Request->Data, &Module);
     Reply(Response, Request, Status, Module.Base, &Module,
           EFI_ERROR(Status) ? 0 : sizeof(Module));
     return Status;
   }
-  if (Request->Command == CMD_FIND_EXPORT) {
+  if (Request->Command == FIND_EXPORT) {
     if (Request->DataSize <= sizeof(MODULE_INFO)) {
       Reply(Response, Request, EFI_INVALID_PARAMETER, 0, 0, 0);
       return EFI_INVALID_PARAMETER;
     }
-    CopyMemLocal(&Module, Request->Data, sizeof(Module));
+    CopyMem(&Module, Request->Data, sizeof(Module));
     Address = 0;
     Status = ResolveExport(Module.Cr3 != 0 ? Module.Cr3 : gKernelCr3,
                            Module.Base,

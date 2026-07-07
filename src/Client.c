@@ -11,21 +11,21 @@
 #define REQUEST_SIZE 4096U
 #define RESPONSE_SIZE 512U
 #define RESPONSE_DATA_SIZE 352U
-#define REQ_MAGIC 0x5145524D4D5355ULL
-#define RESP_MAGIC 0x5345524D4D5355ULL
+#define REQ_MAGIC 0x99D4B1698CAF040FULL
+#define RESP_MAGIC 0xC0D8E93F90BBFBECULL
 #define STATUS_OK 0U
 
-#define CMD_PING 1U
-#define CMD_READ_PHYS 2U
-#define CMD_WRITE_PHYS 3U
-#define CMD_TRANSLATE_VIRT 4U
-#define CMD_READ_VIRT 5U
-#define CMD_WRITE_VIRT 6U
-#define CMD_FIND_PROCESS_PID 7U
-#define CMD_FIND_PROCESS_NAME 8U
-#define CMD_FIND_MODULE 9U
-#define CMD_FIND_KERNEL_MODULE 10U
-#define CMD_FIND_EXPORT 11U
+#define PING 1U
+#define READ_PHYS 2U
+#define WRITE_PHYS 3U
+#define TRANSLATE_VIRT 4U
+#define READ_VIRT 5U
+#define WRITE_VIRT 6U
+#define FIND_PROCESS_PID 7U
+#define FIND_PROCESS_NAME 8U
+#define FIND_MODULE 9U
+#define FIND_KERNEL_MODULE 10U
+#define FIND_EXPORT 11U
 
 typedef ULONG(WINAPI *WMI_OPEN_BLOCK)(GUID *Guid, DWORD DesiredAccess,
                                       HANDLE *DataBlockHandle);
@@ -86,7 +86,7 @@ static const wchar_t *gMemInstances[] = {
 
 static STATE g;
 
-static void CloseRaw(void) {
+static void CloseWmi(void) {
   if (g.CloseBlock != NULL && g.Block != NULL) {
     g.CloseBlock(g.Block);
   }
@@ -96,10 +96,10 @@ static void CloseRaw(void) {
   ZeroMemory(&g, sizeof(g));
 }
 
-static int OpenRaw(GUID *Guid, const wchar_t **Instances) {
+static int OpenWmi(GUID *Guid, const wchar_t **Instances) {
   ULONG Status;
 
-  CloseRaw();
+  CloseWmi();
   g.Advapi = LoadLibraryW(L"Advapi32.dll");
   if (g.Advapi == NULL) {
     return 0;
@@ -110,12 +110,12 @@ static int OpenRaw(GUID *Guid, const wchar_t **Instances) {
   g.CloseBlock = (WMI_CLOSE_BLOCK)GetProcAddress(g.Advapi, "WmiCloseBlock");
   if (g.OpenBlock == NULL || g.ExecuteMethod == NULL ||
       g.CloseBlock == NULL) {
-    CloseRaw();
+    CloseWmi();
     return 0;
   }
   Status = g.OpenBlock(Guid, WMIGUID_EXECUTE, &g.Block);
   if (Status != ERROR_SUCCESS) {
-    CloseRaw();
+    CloseWmi();
     return 0;
   }
   g.Instances = Instances;
@@ -124,11 +124,11 @@ static int OpenRaw(GUID *Guid, const wchar_t **Instances) {
 }
 
 int Init(void) {
-  return OpenRaw(&gMemGuid, gMemInstances);
+  return OpenWmi(&gMemGuid, gMemInstances);
 }
 
 void Close(void) {
-  CloseRaw();
+  CloseWmi();
 }
 
 static void InitRequest(REQUEST *Request, uint32_t Command) {
@@ -138,7 +138,7 @@ static void InitRequest(REQUEST *Request, uint32_t Command) {
   Request->Sequence = ++g.Sequence;
 }
 
-static int ExecuteStandalone(REQUEST *Request, RESPONSE *Response) {
+static int ExecuteWmi(REQUEST *Request, RESPONSE *Response) {
   uint8_t Out[RESPONSE_SIZE];
   ULONG OutSize;
   ULONG Status;
@@ -161,7 +161,7 @@ static int Send(REQUEST *Request, RESPONSE *Response) {
     return 0;
   }
   ZeroMemory(Response, sizeof(*Response));
-  return ExecuteStandalone(Request, Response);
+  return ExecuteWmi(Request, Response);
 }
 
 int Ping(void) {
@@ -169,7 +169,7 @@ int Ping(void) {
   REQUEST *Request = (REQUEST *)In;
   RESPONSE Response;
 
-  InitRequest(Request, CMD_PING);
+  InitRequest(Request, PING);
   return Send(Request, &Response) && Response.Status == STATUS_OK;
 }
 
@@ -178,7 +178,7 @@ int FindProcessByPid(uint32_t Pid, PROCESS_INFO *Process) {
   REQUEST *Request = (REQUEST *)In;
   RESPONSE Response;
 
-  InitRequest(Request, CMD_FIND_PROCESS_PID);
+  InitRequest(Request, FIND_PROCESS_PID);
   Request->Arg1 = Pid;
   if (!Send(Request, &Response) || Response.Status != STATUS_OK ||
       Response.DataSize < sizeof(*Process)) {
@@ -197,7 +197,7 @@ int FindProcessByName(const char *Name, PROCESS_INFO *Process) {
   if (Size > RESPONSE_DATA_SIZE) {
     return 0;
   }
-  InitRequest(Request, CMD_FIND_PROCESS_NAME);
+  InitRequest(Request, FIND_PROCESS_NAME);
   Request->DataSize = (uint32_t)Size;
   CopyMemory(Request->Data, Name, Size);
   if (!Send(Request, &Response) || Response.Status != STATUS_OK ||
@@ -213,7 +213,7 @@ int TranslateVirt(uint32_t Pid, uint64_t Va, uint64_t *Pa) {
   REQUEST *Request = (REQUEST *)In;
   RESPONSE Response;
 
-  InitRequest(Request, CMD_TRANSLATE_VIRT);
+  InitRequest(Request, TRANSLATE_VIRT);
   Request->Arg1 = Pid;
   Request->Arg2 = Va;
   if (!Send(Request, &Response) || Response.Status != STATUS_OK) {
@@ -234,7 +234,7 @@ int ReadPhys(uint64_t Address, void *Buffer, uint32_t Size) {
     if (Chunk > RESPONSE_DATA_SIZE) {
       Chunk = RESPONSE_DATA_SIZE;
     }
-    InitRequest(Request, CMD_READ_PHYS);
+    InitRequest(Request, READ_PHYS);
     Request->Arg1 = Address + Done;
     Request->Arg2 = Chunk;
     if (!Send(Request, &Response) || Response.Status != STATUS_OK ||
@@ -258,7 +258,7 @@ int WritePhys(uint64_t Address, const void *Buffer, uint32_t Size) {
     if (Chunk > RESPONSE_DATA_SIZE) {
       Chunk = RESPONSE_DATA_SIZE;
     }
-    InitRequest(Request, CMD_WRITE_PHYS);
+    InitRequest(Request, WRITE_PHYS);
     Request->Arg1 = Address + Done;
     Request->DataSize = Chunk;
     CopyMemory(Request->Data, (const uint8_t *)Buffer + Done, Chunk);
@@ -281,7 +281,7 @@ int ReadVirt(uint32_t Pid, uint64_t Address, void *Buffer, uint32_t Size) {
     if (Chunk > RESPONSE_DATA_SIZE) {
       Chunk = RESPONSE_DATA_SIZE;
     }
-    InitRequest(Request, CMD_READ_VIRT);
+    InitRequest(Request, READ_VIRT);
     Request->Arg1 = Pid;
     Request->Arg2 = Address + Done;
     Request->Arg3 = Chunk;
@@ -307,7 +307,7 @@ int WriteVirt(uint32_t Pid, uint64_t Address, const void *Buffer,
     if (Chunk > RESPONSE_DATA_SIZE) {
       Chunk = RESPONSE_DATA_SIZE;
     }
-    InitRequest(Request, CMD_WRITE_VIRT);
+    InitRequest(Request, WRITE_VIRT);
     Request->Arg1 = Pid;
     Request->Arg2 = Address + Done;
     Request->DataSize = Chunk;
@@ -330,7 +330,7 @@ int FindModule(const PROCESS_INFO *Process, const char *Name,
   if (Size > RESPONSE_DATA_SIZE) {
     return 0;
   }
-  InitRequest(Request, CMD_FIND_MODULE);
+  InitRequest(Request, FIND_MODULE);
   Request->Arg1 = Process->Pid;
   Request->DataSize = (uint32_t)Size;
   CopyMemory(Request->Data, Name, Size);
@@ -351,7 +351,7 @@ int FindKernelModule(const char *Name, MODULE_INFO *Module) {
   if (Size > RESPONSE_DATA_SIZE) {
     return 0;
   }
-  InitRequest(Request, CMD_FIND_KERNEL_MODULE);
+  InitRequest(Request, FIND_KERNEL_MODULE);
   Request->DataSize = (uint32_t)Size;
   CopyMemory(Request->Data, Name, Size);
   if (!Send(Request, &Response) || Response.Status != STATUS_OK ||
@@ -373,7 +373,7 @@ int FindExport(const MODULE_INFO *Module, const char *Name,
   if (Size > RESPONSE_DATA_SIZE) {
     return 0;
   }
-  InitRequest(Request, CMD_FIND_EXPORT);
+  InitRequest(Request, FIND_EXPORT);
   Request->DataSize = Size;
   CopyMemory(Request->Data, Module, sizeof(*Module));
   CopyMemory(Request->Data + sizeof(*Module), Name, NameSize);
