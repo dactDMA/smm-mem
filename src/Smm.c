@@ -1079,9 +1079,14 @@ static EFI_STATUS FindKernelModule(const char *Name, MODULE_INFO *Module) {
 
 static VOID Reply(RESPONSE *Response, REQUEST *Request, EFI_STATUS Status,
                   UINT64 Result, const VOID *Data, UINT32 DataSize) {
+  UINT32 StatusCode;
+
   ZeroMem(Response, sizeof(*Response));
   Response->Magic = RESP_MAGIC;
-  Response->Status = (UINT32)Status;
+  StatusCode = (UINT32)Status;
+  Response->Status = EFI_ERROR(Status)
+                         ? (StatusCode != 0 ? StatusCode : 1U)
+                         : 0;
   Response->Command = Request->Command;
   Response->Sequence = Request->Sequence;
   Response->Result = Result;
@@ -1228,7 +1233,7 @@ static EFI_STATUS EFIAPI SwSmiHandler(EFI_HANDLE DispatchHandle,
   (void)Context;
   (void)CommBuffer;
   (void)CommBufferSize;
-  ProcessRequest();
+  (void)ProcessRequest();
   return EFI_SUCCESS;
 }
 
@@ -1422,11 +1427,19 @@ static EFI_STATUS EFIAPI ConfigCommHandler(EFI_HANDLE DispatchHandle,
                                            const VOID *Context,
                                            VOID *CommBuffer,
                                            UINTN *CommBufferSize) {
+  CONFIG *Config;
+
   (void)DispatchHandle;
   (void)Context;
-  (void)CommBufferSize;
   Log("smm config comm received\n");
-  return ApplyConfig((CONFIG *)CommBuffer, "comm");
+  if (CommBuffer == 0 || CommBufferSize == 0 ||
+      *CommBufferSize < sizeof(CONFIG)) {
+    Log("smm config comm invalid buffer\n");
+    return EFI_SUCCESS;
+  }
+  Config = (CONFIG *)CommBuffer;
+  Config->Status = ApplyConfig(Config, "comm");
+  return EFI_SUCCESS;
 }
 
 static EFI_STATUS RegisterConfigComm(VOID) {
