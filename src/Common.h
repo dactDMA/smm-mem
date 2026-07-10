@@ -124,7 +124,7 @@ typedef EFI_STATUS(EFIAPI *EFI_CREATE_EVENT_EX)(UINT32 Type, EFI_TPL NotifyTpl,
                                                 EFI_EVENT *Event);
 
 #define EVT_TIMER 0x80000000U
-#define EVT_NOTIFY_SIGNAL 0x00000100U
+#define EVT_NOTIFY_SIGNAL 0x00000200U
 #define TPL_CALLBACK 8U
 
 struct EFI_BOOT_SERVICES {
