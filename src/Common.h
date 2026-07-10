@@ -18,12 +18,16 @@ typedef UINT64 EFI_PHYSICAL_ADDRESS;
 
 #define EFIAPI __cdecl
 
-#define EFI_SUCCESS 0
-#define EFI_INVALID_PARAMETER 2
-#define EFI_UNSUPPORTED 3
-#define EFI_OUT_OF_RESOURCES 9
-#define EFI_NOT_FOUND 14
-#define EFI_ERROR(Status) ((Status) != EFI_SUCCESS)
+#define EFI_ERROR_BIT 0x8000000000000000ULL
+#define EFIERR(Code) ((EFI_STATUS)(EFI_ERROR_BIT | (UINT64)(Code)))
+
+#define EFI_SUCCESS ((EFI_STATUS)0)
+#define EFI_INVALID_PARAMETER EFIERR(2)
+#define EFI_UNSUPPORTED EFIERR(3)
+#define EFI_OUT_OF_RESOURCES EFIERR(9)
+#define EFI_NOT_FOUND EFIERR(14)
+#define EFI_ERROR(Status) \
+  ((((EFI_STATUS)(Status)) & EFI_ERROR_BIT) != 0)
 
 #define SW_SMI_VALUE 0xD6U
 #define MAILBOX_SIZE 0x2000U
@@ -257,6 +261,7 @@ typedef struct {
   UINT64 MailboxPhysical;
   UINT32 MailboxSize;
   UINT32 SwSmiValue;
+  EFI_STATUS Status;
 } CONFIG;
 #pragma pack(pop)
 

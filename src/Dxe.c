@@ -589,13 +589,17 @@ static EFI_STATUS ConfigureSmm(VOID) {
   Config->MailboxPhysical = gMailboxPhysical;
   Config->MailboxSize = MAILBOX_SIZE;
   Config->SwSmiValue = SW_SMI_VALUE;
+  Config->Status = EFI_NOT_FOUND;
   Status = SmmComm->Communicate(SmmComm, Header, &CommSize);
+  if (!EFI_ERROR(Status)) {
+    Status = Config->Status;
+  }
   RestoreSmmCommRegionType(CommBuffer, OriginalRegionType);
   if (!EFI_ERROR(Status)) {
     gConfigured = 1;
     Log("dxe smm configure ok\n");
   } else if (LogIt) {
-    LogStatus("dxe smm communicate failed ", Status);
+    LogStatus("dxe smm configure failed ", Status);
     Log("dxe smm communicate size=0x");
     LogHex(CommSize);
     Log("\n");
