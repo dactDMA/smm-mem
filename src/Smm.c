@@ -25,7 +25,7 @@
 #define CR0_WP (1ULL << 16)
 #define MSR_LSTAR 0xC0000082U
 #define SAVE_STATE_CR3 53U
-#define VERBOSE 1
+#define VERBOSE 0
 #define RUNTIME_RELOAD 1
 
 typedef struct EFI_SMM_CPU_PROTOCOL EFI_SMM_CPU_PROTOCOL;
@@ -934,34 +934,34 @@ static EFI_STATUS FindProcessName(const char *Name, PROCESS_INFO *Info) {
 
   ResolveStatus = ResolveProcessLayout();
   if (ResolveStatus != EFI_SUCCESS || gNameOffset == 0) {
-    Dbg("findproc resolve=0x");
+    //Dbg("findproc resolve=0x");
     DbgHex(ResolveStatus);
-    Dbg(" nameoff=0x");
+    //Dbg(" nameoff=0x");
     DbgHex(gNameOffset);
-    Dbg("\n");
+    //Dbg("\n");
     return EFI_NOT_FOUND;
   }
-  Dbg("findproc pid=0x");
-  DbgHex(gPidOffset);
-  Dbg(" links=0x");
-  DbgHex(gLinksOffset);
-  Dbg(" name=0x");
-  DbgHex(gNameOffset);
-  Dbg(" sys=0x");
-  DbgHex(gSystemProcess);
-  Dbg("\n");
+  //Dbg("findproc pid=0x");
+  //DbgHex(gPidOffset);
+  //Dbg(" links=0x");
+  //DbgHex(gLinksOffset);
+  //Dbg(" name=0x");
+  //DbgHex(gNameOffset);
+  //Dbg(" sys=0x");
+  //DbgHex(gSystemProcess);
+  //Dbg("\n");
   ZeroMem(CurrentName, sizeof(CurrentName));
   CopyVirtCr3(gKernelCr3, gSystemProcess + gNameOffset, CurrentName,
               sizeof(CurrentName) - 1, 0);
-  Dbg("findproc sys=\"");
-  Dbg(CurrentName);
-  Dbg("\"\n");
+  //Dbg("findproc sys=\"");
+  //Dbg(CurrentName);
+  //Dbg("\"\n");
   if (SameName(CurrentName, Name)) {
     return FillProcessInfo(gSystemProcess, Info);
   }
   Head = gSystemProcess + gLinksOffset;
   if (ReadVirt64(gKernelCr3, Head, &Link) != EFI_SUCCESS) {
-    Dbg("findproc head read failed\n");
+    //Dbg("findproc head read failed\n");
     return EFI_NOT_FOUND;
   }
   for (Guard = 0; Guard < 4096 && IsKernelPtr(Link) && Link != Head; Guard++) {
@@ -969,9 +969,9 @@ static EFI_STATUS FindProcessName(const char *Name, PROCESS_INFO *Info) {
     ZeroMem(CurrentName, sizeof(CurrentName));
     CopyVirtCr3(gKernelCr3, Eprocess + gNameOffset, CurrentName,
                 sizeof(CurrentName) - 1, 0);
-    Dbg("[");
-    Dbg(CurrentName);
-    Dbg("] ");
+    //Dbg("[");
+    //Dbg(CurrentName);
+    //Dbg("] ");
     if (SameName(CurrentName, Name)) {
       return FillProcessInfo(Eprocess, Info);
     }
@@ -988,9 +988,9 @@ static EFI_STATUS FindProcessName(const char *Name, PROCESS_INFO *Info) {
       break;
     }
   }
-  Dbg("\nfindproc not found count=0x");
-  DbgHex(Guard);
-  Dbg("\n");
+  //Dbg("\nfindproc not found count=0x");
+  //DbgHex(Guard);
+  //Dbg("\n");
   return EFI_NOT_FOUND;
 }
 

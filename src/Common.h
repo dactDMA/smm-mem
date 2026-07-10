@@ -55,7 +55,7 @@ typedef UINT64 EFI_PHYSICAL_ADDRESS;
 
 #define STATUS_OK 0U
 #define EFI_RUNTIME_SERVICES_DATA 6U
-#define SERIAL 1U
+#define SERIAL 0U
 #define COM1_PORT 0x3F8U
 
 typedef struct {

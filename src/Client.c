@@ -413,41 +413,178 @@ int Dump(const MODULE_INFO *Module, DUMP_CALLBACK Callback, void *Context) {
 }
 
 #ifndef API_ONLY
-int wmain(int argc, wchar_t **argv) {
-  if (argc == 1 || (argc == 2 && _wcsicmp(argv[1], L"ping") == 0)) {
-    int Ok = Init() && Ping();
-    printf("%s\n", Ok ? "pong" : "failed");
+static double ElapsedMs(LARGE_INTEGER Start, LARGE_INTEGER End,
+                        LARGE_INTEGER Freq) {
+  return (double)(End.QuadPart - Start.QuadPart) * 1000.0 /
+         (double)Freq.QuadPart;
+}
 
-    if (ReadPhys(0x1000, &Ok, sizeof(Ok))) {
-        printf("ReadPhys under 4gb OK: 0x%llX\n", (unsigned long long)Ok);
-    }
-    else {
-        printf("ReadPhys under 4gb failed\n");
-    }
-    if (ReadPhys(0x200000000, &Ok, sizeof(Ok))) {
-        printf("ReadPhys over 4gb OK: 0x%llX\n", (unsigned long long)Ok);
-    }
-    else {
-        printf("ReadPhys over 4gb failed\n");
-    }
-    PROCESS_INFO notepad;
-    if (FindProcessByName("notepad.exe", &notepad))
-    {
-        printf("FindProcessByName OK: 0x%llX\n", (unsigned long long)Ok);
-        printf("Name: %s\n", notepad.Name);
-        printf("PID: 0x%llX\n", (unsigned long long)notepad.Pid);
-        printf("ImageBase: 0x%llX\n", (unsigned long long)notepad.ImageBase);
-    }
-    else
-    {
-        printf("FindProcessByName failed\n");
-    }
+static void PrintTimed(const char *Name, int Ok, double Ms) {
+  printf("%-28s %s  %.3f ms\n", Name, Ok ? "OK  " : "FAIL", Ms);
+}
 
-    Close();
-    return Ok ? 0 : 1;
+static int RunSpeedtest(void) {
+  LARGE_INTEGER Freq;
+  LARGE_INTEGER Start;
+  LARGE_INTEGER End;
+  PROCESS_INFO Process;
+  MODULE_INFO Module;
+  uint8_t Buffer[RESPONSE_DATA_SIZE];
+  uint64_t Address = 0;
+  uint32_t PhysVal = 0;
+  int Ok;
+  int Pass = 1;
+  const int Rounds = 10;
+  int Index;
+  double TotalMs;
+  double Ms;
+
+  QueryPerformanceFrequency(&Freq);
+
+  printf("=== speedtest ===\n");
+
+  QueryPerformanceCounter(&Start);
+  Ok = Init();
+  QueryPerformanceCounter(&End);
+  PrintTimed("Init", Ok, ElapsedMs(Start, End, Freq));
+  if (!Ok) {
+    return 0;
   }
-  printf("Usage: mem-client.exe [ping]\n");
 
+  QueryPerformanceCounter(&Start);
+  Ok = Ping();
+  QueryPerformanceCounter(&End);
+  PrintTimed("Ping (cold)", Ok, ElapsedMs(Start, End, Freq));
+  Pass &= Ok;
+
+  TotalMs = 0.0;
+  Ok = 1;
+  for (Index = 0; Index < Rounds; Index++) {
+    QueryPerformanceCounter(&Start);
+    if (!Ping()) {
+      Ok = 0;
+    }
+    QueryPerformanceCounter(&End);
+    TotalMs += ElapsedMs(Start, End, Freq);
+  }
+  PrintTimed("Ping x10 avg", Ok, TotalMs / (double)Rounds);
+  Pass &= Ok;
+
+  QueryPerformanceCounter(&Start);
+  Ok = ReadPhys(0x1000, &PhysVal, sizeof(PhysVal));
+  QueryPerformanceCounter(&End);
+  PrintTimed("ReadPhys <4GB", Ok, ElapsedMs(Start, End, Freq));
+  if (Ok) {
+    printf("  value=0x%08X\n", PhysVal);
+  }
+  Pass &= Ok;
+
+  QueryPerformanceCounter(&Start);
+  Ok = ReadPhys(0x200000000ULL, &PhysVal, sizeof(PhysVal));
+  QueryPerformanceCounter(&End);
+  PrintTimed("ReadPhys >4GB", Ok, ElapsedMs(Start, End, Freq));
+  if (Ok) {
+    printf("  value=0x%08X\n", PhysVal);
+  }
+
+  QueryPerformanceCounter(&Start);
+  Ok = FindProcessByPid(4, &Process);
+  QueryPerformanceCounter(&End);
+  PrintTimed("FindProcessByPid(4)", Ok, ElapsedMs(Start, End, Freq));
+  if (Ok) {
+    printf("  name=%s eprocess=0x%llX cr3=0x%llX\n", Process.Name,
+           (unsigned long long)Process.Eprocess,
+           (unsigned long long)Process.Cr3);
+  }
+  Pass &= Ok;
+
+  QueryPerformanceCounter(&Start);
+  Ok = FindProcessByName("System", &Process);
+  QueryPerformanceCounter(&End);
+  PrintTimed("FindProcessByName(System)", Ok, ElapsedMs(Start, End, Freq));
+  Pass &= Ok;
+
+  QueryPerformanceCounter(&Start);
+  Ok = FindProcessByName("notepad.exe", &Process);
+  QueryPerformanceCounter(&End);
+  Ms = ElapsedMs(Start, End, Freq);
+  PrintTimed("FindProcessByName(notepad)", Ok, Ms);
+  if (Ok) {
+    printf("  pid=0x%X base=0x%llX\n", Process.Pid,
+           (unsigned long long)Process.ImageBase);
+  } else {
+    printf("  not running (full process walk took %.3f ms)\n", Ms);
+  }
+
+  QueryPerformanceCounter(&Start);
+  Ok = FindProcessByName("definitely_missing_xyz.exe", &Process);
+  QueryPerformanceCounter(&End);
+  PrintTimed("FindProcessByName(missing)", Ok ? 0 : 1,
+             ElapsedMs(Start, End, Freq));
+  printf("  (OK here means call returned without hang; found=%d)\n", Ok);
+
+  TotalMs = 0.0;
+  Ok = 1;
+  for (Index = 0; Index < Rounds; Index++) {
+    QueryPerformanceCounter(&Start);
+    if (!FindProcessByName("definitely_missing_xyz.exe", &Process)) {
+      /* expected miss */
+    } else {
+      Ok = 0;
+    }
+    QueryPerformanceCounter(&End);
+    TotalMs += ElapsedMs(Start, End, Freq);
+  }
+  PrintTimed("Find missing x10 avg", Ok, TotalMs / (double)Rounds);
+
+  QueryPerformanceCounter(&Start);
+  Ok = FindKernelModule("ntoskrnl.exe", &Module);
+  QueryPerformanceCounter(&End);
+  PrintTimed("FindKernelModule(ntoskrnl)", Ok, ElapsedMs(Start, End, Freq));
+  if (Ok) {
+    printf("  base=0x%llX size=0x%llX\n", (unsigned long long)Module.Base,
+           (unsigned long long)Module.Size);
+  }
+
+  if (Ok) {
+    QueryPerformanceCounter(&Start);
+    Ok = FindExport(&Module, "PsInitialSystemProcess", &Address);
+    QueryPerformanceCounter(&End);
+    PrintTimed("FindExport(PsInitial...)", Ok, ElapsedMs(Start, End, Freq));
+    if (Ok) {
+      printf("  addr=0x%llX\n", (unsigned long long)Address);
+    }
+  }
+
+  QueryPerformanceCounter(&Start);
+  Ok = ReadPhys(0x1000, Buffer, sizeof(Buffer));
+  QueryPerformanceCounter(&End);
+  PrintTimed("ReadPhys 352B", Ok, ElapsedMs(Start, End, Freq));
+
+  TotalMs = 0.0;
+  Ok = 1;
+  for (Index = 0; Index < Rounds; Index++) {
+    QueryPerformanceCounter(&Start);
+    if (!ReadPhys(0x1000, Buffer, sizeof(Buffer))) {
+      Ok = 0;
+    }
+    QueryPerformanceCounter(&End);
+    TotalMs += ElapsedMs(Start, End, Freq);
+  }
+  PrintTimed("ReadPhys 352B x10 avg", Ok, TotalMs / (double)Rounds);
+
+  printf("=== done (%s) ===\n", Pass ? "pass" : "fail");
+  Close();
+  return Pass;
+}
+
+int wmain(int argc, wchar_t **argv) {
+  if (argc == 1 ||
+      (argc == 2 && (_wcsicmp(argv[1], L"ping") == 0 ||
+                     _wcsicmp(argv[1], L"speedtest") == 0))) {
+    return RunSpeedtest() ? 0 : 1;
+  }
+  printf("Usage: Client.exe [ping|speedtest]\n");
   return 1;
 }
 #endif
