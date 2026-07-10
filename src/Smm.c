@@ -1371,7 +1371,7 @@ static VOID SaveSmstConfig(const CONFIG *Config) {
   if (Saved == 0) {
     return;
   }
-  CopyMemLocal(Saved, Config, sizeof(CONFIG));
+  CopyMem(Saved, Config, sizeof(CONFIG));
   if (gSmst->SmmInstallConfigurationTable != 0) {
     InstallTable = (SMM_INSTALL_CONFIG_TABLE)gSmst->SmmInstallConfigurationTable;
     InstallTable(gSmst, &gConfigGuid, Saved, sizeof(CONFIG));
