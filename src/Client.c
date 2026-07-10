@@ -413,167 +413,165 @@ int Dump(const MODULE_INFO *Module, DUMP_CALLBACK Callback, void *Context) {
 }
 
 #ifndef API_ONLY
-static double ElapsedMs(LARGE_INTEGER Start, LARGE_INTEGER End,
-                        LARGE_INTEGER Freq) {
-  return (double)(End.QuadPart - Start.QuadPart) * 1000.0 /
-         (double)Freq.QuadPart;
+static double ElapsedSec(LARGE_INTEGER Start, LARGE_INTEGER End,
+                         LARGE_INTEGER Freq) {
+  return (double)(End.QuadPart - Start.QuadPart) / (double)Freq.QuadPart;
 }
 
-static void PrintTimed(const char *Name, int Ok, double Ms) {
-  printf("%-28s %s  %.3f ms\n", Name, Ok ? "OK  " : "FAIL", Ms);
+static void PrintThroughput(const char *Label, uint64_t Bytes, double Sec,
+                            int Ok) {
+  double Mb = (double)Bytes / (1024.0 * 1024.0);
+  double Mbps = Sec > 0.0 ? Mb / Sec : 0.0;
+  double Ms = Sec * 1000.0;
+  printf("%-20s %s  %7.2f MB  %8.2f ms  %8.2f MB/s\n", Label,
+         Ok ? "OK  " : "FAIL", Mb, Ms, Mbps);
+}
+
+/* ReadPhys chunks at RESPONSE_DATA_SIZE (352). Keep transferring until
+   TargetBytes is reached, walking a fixed physical window. */
+static int ReadPhysBandwidth(uint64_t PhysBase, uint64_t TargetBytes,
+                             uint32_t ChunkSize, uint8_t *Buffer,
+                             uint64_t *OutBytes) {
+  uint64_t Done = 0;
+  uint64_t Offset = 0;
+  const uint64_t Window = 0x100000ULL; /* 1 MB window starting at PhysBase */
+
+  if (ChunkSize == 0 || ChunkSize > RESPONSE_DATA_SIZE) {
+    ChunkSize = RESPONSE_DATA_SIZE;
+  }
+  while (Done < TargetBytes) {
+    uint32_t Chunk = ChunkSize;
+    if ((uint64_t)Chunk > TargetBytes - Done) {
+      Chunk = (uint32_t)(TargetBytes - Done);
+    }
+    if (!ReadPhys(PhysBase + Offset, Buffer, Chunk)) {
+      *OutBytes = Done;
+      return 0;
+    }
+    Done += Chunk;
+    Offset += Chunk;
+    if (Offset + ChunkSize > Window) {
+      Offset = 0;
+    }
+  }
+  *OutBytes = Done;
+  return 1;
 }
 
 static int RunSpeedtest(void) {
   LARGE_INTEGER Freq;
   LARGE_INTEGER Start;
   LARGE_INTEGER End;
-  PROCESS_INFO Process;
-  MODULE_INFO Module;
   uint8_t Buffer[RESPONSE_DATA_SIZE];
-  uint64_t Address = 0;
+  uint64_t Bytes = 0;
   uint32_t PhysVal = 0;
   int Ok;
   int Pass = 1;
-  const int Rounds = 10;
-  int Index;
-  double TotalMs;
-  double Ms;
+  double Sec;
+  const uint64_t Sizes[] = {
+      64ULL * 1024ULL,       /* 64 KB */
+      256ULL * 1024ULL,      /* 256 KB */
+      1ULL * 1024ULL * 1024ULL, /* 1 MB */
+      4ULL * 1024ULL * 1024ULL, /* 4 MB */
+  };
+  size_t Index;
 
   QueryPerformanceFrequency(&Freq);
 
-  printf("=== speedtest ===\n");
+  printf("=== ReadPhys speedtest ===\n");
+  printf("chunk size: %u bytes (WMI/SMM response payload)\n\n",
+         RESPONSE_DATA_SIZE);
 
-  QueryPerformanceCounter(&Start);
   Ok = Init();
-  QueryPerformanceCounter(&End);
-  PrintTimed("Init", Ok, ElapsedMs(Start, End, Freq));
   if (!Ok) {
+    printf("Init failed\n");
     return 0;
   }
 
   QueryPerformanceCounter(&Start);
   Ok = Ping();
   QueryPerformanceCounter(&End);
-  PrintTimed("Ping (cold)", Ok, ElapsedMs(Start, End, Freq));
-  Pass &= Ok;
-
-  TotalMs = 0.0;
-  Ok = 1;
-  for (Index = 0; Index < Rounds; Index++) {
-    QueryPerformanceCounter(&Start);
-    if (!Ping()) {
-      Ok = 0;
-    }
-    QueryPerformanceCounter(&End);
-    TotalMs += ElapsedMs(Start, End, Freq);
+  Sec = ElapsedSec(Start, End, Freq);
+  printf("%-20s %s  %8.3f ms\n", "Ping", Ok ? "OK  " : "FAIL", Sec * 1000.0);
+  if (!Ok) {
+    Close();
+    return 0;
   }
-  PrintTimed("Ping x10 avg", Ok, TotalMs / (double)Rounds);
-  Pass &= Ok;
 
   QueryPerformanceCounter(&Start);
   Ok = ReadPhys(0x1000, &PhysVal, sizeof(PhysVal));
   QueryPerformanceCounter(&End);
-  PrintTimed("ReadPhys <4GB", Ok, ElapsedMs(Start, End, Freq));
-  if (Ok) {
-    printf("  value=0x%08X\n", PhysVal);
-  }
+  Sec = ElapsedSec(Start, End, Freq);
+  printf("%-20s %s  %8.3f ms  value=0x%08X\n", "ReadPhys 4B <4GB",
+         Ok ? "OK  " : "FAIL", Sec * 1000.0, PhysVal);
   Pass &= Ok;
 
   QueryPerformanceCounter(&Start);
   Ok = ReadPhys(0x200000000ULL, &PhysVal, sizeof(PhysVal));
   QueryPerformanceCounter(&End);
-  PrintTimed("ReadPhys >4GB", Ok, ElapsedMs(Start, End, Freq));
-  if (Ok) {
-    printf("  value=0x%08X\n", PhysVal);
-  }
+  Sec = ElapsedSec(Start, End, Freq);
+  printf("%-20s %s  %8.3f ms  value=0x%08X\n", "ReadPhys 4B >4GB",
+         Ok ? "OK  " : "FAIL", Sec * 1000.0, PhysVal);
 
-  QueryPerformanceCounter(&Start);
-  Ok = FindProcessByPid(4, &Process);
-  QueryPerformanceCounter(&End);
-  PrintTimed("FindProcessByPid(4)", Ok, ElapsedMs(Start, End, Freq));
-  if (Ok) {
-    printf("  name=%s eprocess=0x%llX cr3=0x%llX\n", Process.Name,
-           (unsigned long long)Process.Eprocess,
-           (unsigned long long)Process.Cr3);
-  }
-  Pass &= Ok;
+  /* warmup so first timed run is not cold SMM */
+  ReadPhysBandwidth(0x1000, 64ULL * 1024ULL, RESPONSE_DATA_SIZE, Buffer,
+                    &Bytes);
 
-  QueryPerformanceCounter(&Start);
-  Ok = FindProcessByName("System", &Process);
-  QueryPerformanceCounter(&End);
-  PrintTimed("FindProcessByName(System)", Ok, ElapsedMs(Start, End, Freq));
-  Pass &= Ok;
+  printf("\n%-20s %-4s  %10s  %10s  %12s\n", "test", "stat", "data", "time",
+         "throughput");
+  printf("------------------------------------------------------------\n");
 
-  QueryPerformanceCounter(&Start);
-  Ok = FindProcessByName("notepad.exe", &Process);
-  QueryPerformanceCounter(&End);
-  Ms = ElapsedMs(Start, End, Freq);
-  PrintTimed("FindProcessByName(notepad)", Ok, Ms);
-  if (Ok) {
-    printf("  pid=0x%X base=0x%llX\n", Process.Pid,
-           (unsigned long long)Process.ImageBase);
-  } else {
-    printf("  not running (full process walk took %.3f ms)\n", Ms);
-  }
-
-  QueryPerformanceCounter(&Start);
-  Ok = FindProcessByName("definitely_missing_xyz.exe", &Process);
-  QueryPerformanceCounter(&End);
-  PrintTimed("FindProcessByName(missing)", Ok ? 0 : 1,
-             ElapsedMs(Start, End, Freq));
-  printf("  (OK here means call returned without hang; found=%d)\n", Ok);
-
-  TotalMs = 0.0;
-  Ok = 1;
-  for (Index = 0; Index < Rounds; Index++) {
+  for (Index = 0; Index < sizeof(Sizes) / sizeof(Sizes[0]); Index++) {
     QueryPerformanceCounter(&Start);
-    if (!FindProcessByName("definitely_missing_xyz.exe", &Process)) {
-      /* expected miss */
-    } else {
-      Ok = 0;
-    }
+    Ok = ReadPhysBandwidth(0x1000, Sizes[Index], RESPONSE_DATA_SIZE, Buffer,
+                           &Bytes);
     QueryPerformanceCounter(&End);
-    TotalMs += ElapsedMs(Start, End, Freq);
-  }
-  PrintTimed("Find missing x10 avg", Ok, TotalMs / (double)Rounds);
-
-  QueryPerformanceCounter(&Start);
-  Ok = FindKernelModule("ntoskrnl.exe", &Module);
-  QueryPerformanceCounter(&End);
-  PrintTimed("FindKernelModule(ntoskrnl)", Ok, ElapsedMs(Start, End, Freq));
-  if (Ok) {
-    printf("  base=0x%llX size=0x%llX\n", (unsigned long long)Module.Base,
-           (unsigned long long)Module.Size);
-  }
-
-  if (Ok) {
-    QueryPerformanceCounter(&Start);
-    Ok = FindExport(&Module, "PsInitialSystemProcess", &Address);
-    QueryPerformanceCounter(&End);
-    PrintTimed("FindExport(PsInitial...)", Ok, ElapsedMs(Start, End, Freq));
-    if (Ok) {
-      printf("  addr=0x%llX\n", (unsigned long long)Address);
+    Sec = ElapsedSec(Start, End, Freq);
+    PrintThroughput("ReadPhys", Bytes, Sec, Ok);
+    Pass &= Ok;
+    if (!Ok) {
+      printf("  stopped after %llu bytes\n", (unsigned long long)Bytes);
+      break;
     }
   }
 
-  QueryPerformanceCounter(&Start);
-  Ok = ReadPhys(0x1000, Buffer, sizeof(Buffer));
-  QueryPerformanceCounter(&End);
-  PrintTimed("ReadPhys 352B", Ok, ElapsedMs(Start, End, Freq));
-
-  TotalMs = 0.0;
-  Ok = 1;
-  for (Index = 0; Index < Rounds; Index++) {
+  /* single max-chunk latency / implied rate */
+  {
+    const int Rounds = 100;
+    int I;
+    Ok = 1;
     QueryPerformanceCounter(&Start);
-    if (!ReadPhys(0x1000, Buffer, sizeof(Buffer))) {
-      Ok = 0;
+    for (I = 0; I < Rounds; I++) {
+      if (!ReadPhys(0x1000, Buffer, RESPONSE_DATA_SIZE)) {
+        Ok = 0;
+        break;
+      }
     }
     QueryPerformanceCounter(&End);
-    TotalMs += ElapsedMs(Start, End, Freq);
+    Sec = ElapsedSec(Start, End, Freq);
+    Bytes = Ok ? (uint64_t)Rounds * RESPONSE_DATA_SIZE : 0;
+    PrintThroughput("ReadPhys 352B x100", Bytes, Sec, Ok);
+    if (Ok && Sec > 0.0) {
+      printf("  per call: %.3f ms  (%.0f calls/s)\n",
+             (Sec * 1000.0) / (double)Rounds, (double)Rounds / Sec);
+    }
+    Pass &= Ok;
   }
-  PrintTimed("ReadPhys 352B x10 avg", Ok, TotalMs / (double)Rounds);
 
-  printf("=== done (%s) ===\n", Pass ? "pass" : "fail");
+  /*
+   * Process / kernel lookups temporarily disabled until firmware update.
+   *
+   * PROCESS_INFO Process;
+   * MODULE_INFO Module;
+   * uint64_t Address = 0;
+   * FindProcessByPid(4, &Process);
+   * FindProcessByName("notepad.exe", &Process);
+   * FindKernelModule("ntoskrnl.exe", &Module);
+   * FindExport(&Module, "PsInitialSystemProcess", &Address);
+   * ReadVirt(...);
+   */
+
+  printf("\n=== done (%s) ===\n", Pass ? "pass" : "fail");
   Close();
   return Pass;
 }
